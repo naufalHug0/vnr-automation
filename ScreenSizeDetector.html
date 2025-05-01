@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <script>
+      const width = screen.width;
+      const height = screen.height;
+
+      // Slightly reduce to fit within screen
+      const modalWidth = Math.floor(width * 0.90);
+      const modalHeight = Math.floor(height * 0.95);
+
+      google.script.run
+        .withSuccessHandler(() => google.script.host.close())
+        .openConfiguration(modalWidth, modalHeight)
+    </script>
+  </body>
+</html>
