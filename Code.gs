@@ -9,7 +9,7 @@ const constants = {
             }
         ]
     },
-    VALIDITY_SHEET_NAME: "Validity",
+    VALIDITY_SHEET_NAME: "Validity & Multicol",
     RESULT_SHEET_NAME: "Hasil Validity & Reliability",
     COLORS: {
         VALIDITY: { 
@@ -121,6 +121,7 @@ class SpreadsheetUtils {
     }
 
     setupColorConditionals() {
+        const validitySheet = this.context.spreadSheetApp.getSheetByName(constants.VALIDITY_SHEET_NAME)
         const startRange = 2
         const reliabilityStartCol = 2
         const reliabilityStartRow = 5 + this.context.totalIndicators
@@ -141,9 +142,22 @@ class SpreadsheetUtils {
                 .setBackground(constants.COLORS.RELIABILITY.RESULT_SEDANG.BACKGROUND),
                 SpreadsheetApp.newConditionalFormatRule()
                 .whenTextContains(constants.TEXTS.RELIABILITY.RESULT_TINGGI)
-                .setBackground(constants.COLORS.RELIABILITY.RESULT_TINGGI.BACKGROUND)
-            ].map(rule => rule.setRanges([ this.context.resultSheet.getRange(reliabilityStartRow + 6 + this.totalRespondents, reliabilityStartCol+1) ]).build())
+                .setBackground(constants.COLORS.RELIABILITY.RESULT_TINGGI.BACKGROUND),
+            ].map(rule => rule.setRanges([ this.context.resultSheet.getRange(reliabilityStartRow + 6 + this.totalRespondents, reliabilityStartCol+1) ]).build()),
         ]
+
+        const validitySheetRules = [
+          SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThanOrEqualTo(0.89),
+          SpreadsheetApp.newConditionalFormatRule().whenNumberLessThanOrEqualTo(0.79)
+        ].map(rule => rule
+                .setBackground('red')
+                .setFontColor('white')
+                .setRanges([validitySheet.getRange(this.totalRespondents + 2, 2, 1, this.context.totalIndicators + (2*(this.context.configuration.variables.length - 1)))]).build()
+          )
+
+        const validityConditionalFormatRules = validitySheet.getConditionalFormatRules()
+        validitySheetRules.forEach(rule => validityConditionalFormatRules.push(rule))
+        validitySheet.setConditionalFormatRules(validityConditionalFormatRules)
 
         const conditionalFormatRules = this.context.resultSheet.getConditionalFormatRules()
         rules.forEach(rule => conditionalFormatRules.push(rule))
@@ -182,6 +196,7 @@ class ValidityAnalysisTemplateBuilder {
 
 		this.cellAddresses = this.context.cellAddresses
 		this.totalIndicators = this.context.totalIndicators
+    this.validityGenerator = new ValidityGenerator()
 
 		this.createTemplate()
 	}
@@ -203,6 +218,8 @@ class ValidityAnalysisTemplateBuilder {
             this.addScaleCellAddress(i)
             
             if (counter == this.configuration.variables[j].indicatorsCount) {
+                this.fillRandomScale(i - counter + 1, j)
+
                 counter = 0
 
                 this.addGapBetweenCol(i)
@@ -217,16 +234,19 @@ class ValidityAnalysisTemplateBuilder {
 		    this.addNumberCol()
     }
 
-    getRandomizedScale() {
-        const randBetween = "4,5"
-        return Array.from({ length: this.context.totalRespondents }, () => [`=RANDBETWEEN(${randBetween})`])
+    fillRandomScale(colNumber, currVariableIndex) {
+      this.validitySheet.getRange(2, colNumber, this.configuration.totalRespondents, this.configuration.variables[currVariableIndex].indicatorsCount).setValues(
+          this.validityGenerator.generateScale({
+            numOfIndicators: this.configuration.variables[currVariableIndex].indicatorsCount,
+            numOfRespondents: this.configuration.totalRespondents,
+            scaleMin: this.configuration.variables[currVariableIndex].scale.low,
+            scaleMax: this.configuration.variables[currVariableIndex].scale.high
+          })
+        )
     }
 
     fillIndicatorCol(colNumber, currVariableIndex) {
-        const scale = this.getRandomizedScale()
         const highestScale = this.configuration.variables[currVariableIndex].scale.high
-
-        this.validitySheet.getRange(2, colNumber, this.configuration.totalRespondents).setValues(scale)
 
         this.validitySheet.getRange(this.configuration.totalRespondents + 4, colNumber, highestScale + 1, 1)
             .setValues([["COUNTS"], ...Array.from({ length: highestScale }, (_, scaleIndex) => [`=${scaleIndex+1}&" = "&COUNTIF(${this.context.getIndicatorColumnRange(colNumber)}, ${scaleIndex+1})`])])
@@ -447,5 +467,148 @@ class ReliabilityResultBuilder {
 
   createFooterMerge(startRow, startCol) {
     this.resultSheet.getRange(startRow + 3 + this.context.configuration.totalRespondents, startCol + 2, 4, this.context.totalIndicators).setBorder(true,true,true,true,true,true).merge()
+  }
+}
+
+class ValidityGenerator {
+  constructor(context) {
+		this.minCorrel = 0.8
+    this.maxCorrel = 0.89
+
+    this.tuningMaxAttempts = 100
+	}
+
+  generateRangeSectioning(min, max) {
+      const result = []
+
+      for (let i = min; i < max; i++) {
+          result.push([i, i + ((i == min && max >= min + 2) ? 2 : 1)])
+      }
+
+      return result
+  }
+
+  generateDescendingArray(n) {
+      if (n <= 1) return [1.0];
+
+      const total = 1.0;
+      const dominant = (n === 2) ? 0.8 : 0.55
+      const remaining = total - dominant;
+      const minValue = 0.01;
+
+      if (n === 2) {
+          return [dominant, parseFloat((remaining).toFixed(10))];
+      }
+
+      const restCount = n - 1
+
+      const ratio = 0.7;
+      const weights = Array.from({ length: restCount }, (_, i) => Math.pow(ratio, i));
+      const sumWeights = weights.reduce((a, b) => a + b, 0);
+      let scaled = weights.map(w => (w / sumWeights) * remaining);
+
+      scaled = scaled.map(v => Math.max(minValue, parseFloat(v.toFixed(2))));
+      
+      let scaledSum = scaled.reduce((a, b) => a + b, 0);
+      let diff = parseFloat((remaining - scaledSum).toFixed(2));
+      scaled[scaled.length - 1] = parseFloat((scaled[scaled.length - 1] + diff).toFixed(2));
+
+      const final = [parseFloat(dominant.toFixed(2)), ...scaled];
+
+      return final;
+  }
+
+  generateScale({
+      numOfIndicators,
+      numOfRespondents,
+      scaleMin,
+      scaleMax
+  }) {
+      const totalCells = numOfRespondents * numOfIndicators
+      const result = []
+
+      const scalesSections = this.generateRangeSectioning(scaleMin, scaleMax).reverse()
+      const scalesPersentage = this.generateDescendingArray(scaleMax - scaleMin)
+
+      const scaleWithPersentage = Array.from({ length: scalesSections.length }, (_,i) => {
+          return [scalesSections[i], scalesPersentage[i]]
+      })
+
+      for (let i = 0; i < scaleWithPersentage.length; i++) {
+          const [scaleRange, persentage] = scaleWithPersentage[i]
+
+          const [min, max] = scaleRange
+          const cellCount = (i < scaleWithPersentage.length - 1) ? Math.ceil(totalCells * persentage) : totalCells - (result.length * numOfIndicators)
+
+          const randomData = Array.from({ length: cellCount / numOfIndicators }, () => Array.from({ length: numOfIndicators }, () => Math.floor(Math.random() * (max - min + 1)) + min))
+          result.push(...randomData)
+      }
+
+      return this.tuneCorrelation({
+        generatedScalesData: result, 
+        scaleMin, 
+        scaleMax
+      })
+  }
+  
+  tuneCorrelation({generatedScalesData, scaleMin, scaleMax}) {
+    const rows = generatedScalesData.length;
+    const cols = generatedScalesData[0].length;
+
+    function correl(x, y) {
+        const n = x.length;
+        const meanX = x.reduce((a, b) => a + b, 0) / n;
+        const meanY = y.reduce((a, b) => a + b, 0) / n;
+        let num = 0, dx2 = 0, dy2 = 0;
+        for (let i = 0; i < n; i++) {
+            const dx = x[i] - meanX;
+            const dy = y[i] - meanY;
+            num += dx * dy;
+            dx2 += dx * dx;
+            dy2 += dy * dy;
+        }
+        const denom = Math.sqrt(dx2 * dy2);
+        return denom === 0 ? 0 : num / denom;
+    }
+
+    function clamp(val, min, max) {
+        return Math.max(min, Math.min(max, val));
+    }
+
+    const adjusted = generatedScalesData.map(row => [...row]);
+
+    for (let attempt = 0; attempt < this.tuningMaxAttempts; attempt++) {
+        const rowSums = adjusted.map(row => row.reduce((a, b) => a + b, 0));
+
+        const correlations = [];
+        for (let c = 0; c < cols; c++) {
+            const colData = adjusted.map(row => row[c]);
+            correlations.push(correl(colData, rowSums));
+        }
+
+        const allInRange = correlations.every(r => r >= this.minCorrel && r < this.maxCorrel);
+        if (allInRange) {
+            console.log(`Success after ${attempt} attempts, correlations:`, correlations.map(r => r.toFixed(4)));
+            return adjusted;
+        }
+
+        for (let c = 0; c < cols; c++) {
+            if (correlations[c] < this.minCorrel || correlations[c] >= this.maxCorrel) {
+                const tweakDirection = correlations[c] < this.minCorrel ? 1 : -1;
+
+                for (let r = 0; r < rows; r++) {
+                    if (Math.random() < 0.5) {
+                        const newVal = clamp(adjusted[r][c] + tweakDirection, scaleMin, scaleMax);
+                        adjusted[r][c] = newVal;
+                    }
+                }
+            }
+        }
+
+        if (attempt + 1 == this.tuningMaxAttempts) {
+          console.log(`Failed to fine-tune data to meet correlation constraints after ${this.tuningMaxAttempts} attempts.`)
+          return adjusted
+        }
+    }
   }
 }
